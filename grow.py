@@ -98,22 +98,24 @@
 # print(freq)
 
 
-# ? Find First Non-Repeating Element
+# # ? Find First Non-Repeating Element
 
 
-a = [10, 20, 30, 10, 20, 40, 50, 30]
+# a = [10, 20, 30, 10, 20, 40, 50, 30]
 
-freq = {}
+# freq = {}
+# la = []
+# for i in a:
+#     if i in freq :
+#         freq[i] +=1
+#     else:
+#         freq[i] = 1 
+        
+# for i in freq:
+#     if freq[i] == 1:
+#         la.append(i)
+        
+# print(la[0])
+# print(la)
 
-for i in a:
-    if i in freq:
-        freq[i] +=1
-    else:
-        freq[i] = 1 
 
-
-for i in freq:
-    if freq.values(i) == 1 :
-        print(i)
-
-gvh lkm ,
