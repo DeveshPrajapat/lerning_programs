@@ -115,3 +115,5 @@ for i in a:
 for i in freq:
     if freq.values(i) == 1 :
         print(i)
+
+gvh lkm ,
