@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Interactive City Particle System</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Courier New', Courier, monospace; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        #video-feed { position: absolute; bottom: 10px; left: 10px; width: 160px; height: 120px; z-index: 2; border: 1px solid #333; transform: scaleX(-1); opacity: 0.7; border-radius: 8px; }
+        #ui { position: absolute; top: 20px; left: 20px; color: #00ffcc; z-index: 3; pointer-events: none; }
+        h1 { margin: 0; font-size: 1.2rem; text-shadow: 0 0 10px #00ffcc; }
+        p { margin: 5px 0; font-size: 0.8rem; color: #aaa; }
+        .hud-item { background: rgba(0, 20, 20, 0.8); padding: 10px; border-left: 3px solid #00ffcc; margin-top: 10px; }
+        #status { color: #ff0055; font-weight: bold; }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="ui">
+        <div class="hud-item">
+            <h1>NEON PARTICLE CITY</h1>
+            <p>Status: <span id="status">Initializing Camera...</span></p>
+            <p>Current Template: <span id="mode-display" style="color:white">CITY GRID</span></p>
+        </div>
+        <div class="hud-item">
+            <p>☝️ <b>1 Hand:</b> Attract Particles</p>
+            <p>👌 <b>Pinch:</b> EXPAND & Color Heat</p>
+            <p>🙌 <b>2 Hands:</b> Switch Template</p>
+        </div>
+    </div>
+
+    <video id="video-feed" playsinline></video>
+    <div id="canvas-container"></div>
+
+<script>
+    // --- CONFIGURATION ---
+    const PARTICLE_COUNT = 15000;
+    const PARTICLE_SIZE = 0.15;
+    const INTERACTION_RADIUS = 80;
+    const MORPH_SPEED = 0.05;
+
+    // --- GLOBALS ---
+    let scene, camera, renderer, particles, geometry;
+    let material;
+    let time = 0;
+    let currentShapeIndex = 0;
+    let handPosition = new THREE.Vector3(0, 0, 0);
+    let isHandPresent = false;
+    let isPinching = false;
+    let shapeSwitchCooldown = 0;
+
+    // Attribute Arrays
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const targetPositions = new Float32Array(PARTICLE_COUNT * 3); // Where they want to go
+    const colors = new Float32Array(PARTICLE_COUNT * 3);
+    const initialPositions = new Float32Array(PARTICLE_COUNT * 3); // For City memory
+
+    // DOM Elements
+    const statusEl = document.getElementById('status');
+    const modeEl = document.getElementById('mode-display');
+
+    // --- TEMPLATE GENERATORS ---
+
+    function getPointOnSphere(r) {
+        const u = Math.random();
+        const v = Math.random();
+        const theta = 2 * Math.PI * u;
+        const phi = Math.acos(2 * v - 1);
+        return {
+            x: r * Math.sin(phi) * Math.cos(theta),
+            y: r * Math.sin(phi) * Math.sin(theta),
+            z: r * Math.cos(phi)
+        };
+    }
+
+    function generateCity() {
+        // Generates points on surfaces of random "buildings"
+        const tempArr = [];
+        const buildings = 40;
+        const streetWidth = 5;
+        
+        for(let i=0; i<PARTICLE_COUNT; i++) {
+            // Assign particle to a specific building block
+            // Simple grid layout
+            const bIdx = Math.floor(Math.random() * buildings);
+            const range = 100;
+            const xBase = (Math.random() * range) - (range/2);
+            const zBase = (Math.random() * range) - (range/2);
+            const height = 10 + Math.random() * 40;
+            const width = 2 + Math.random() * 5;
+            
+            // Snap to grid for "City" feel
+            const snapX = Math.round(xBase / 10) * 10;
+            const snapZ = Math.round(zBase / 10) * 10;
+
+            // Point on surface of box
+            const face = Math.floor(Math.random() * 5); // 0-3 sides, 4 top
+            let px, py, pz;
+            
+            if (face < 4) { // Sides
+                py = (Math.random() - 0.5) * height + (height/2); // elevate
+                if(face === 0) { px = width; pz = (Math.random()-0.5)*width; }
+                if(face === 1) { px = -width; pz = (Math.random()-0.5)*width; }
+                if(face === 2) { pz = width; px = (Math.random()-0.5)*width; }
+                if(face === 3) { pz = -width; px = (Math.random()-0.5)*width; }
+            } else { // Roof
+                py = height;
+                px = (Math.random()-0.5)*width;
+                pz = (Math.random()-0.5)*width;
+            }
+
+            tempArr.push(snapX + px, py - 10, snapZ + pz);
+        }
+        return tempArr;
+    }
+
+    function generateHeart() {
+        const tempArr = [];
+        for(let i=0; i<PARTICLE_COUNT; i++) {
+            // Parametric Heart Equation
+            // x = 16sin^3(t)
+            // y = 13cos(t) - 5cos(2t) - 2cos(3t) - cos(4t)
+            const t = Math.random() * Math.PI * 2;
+            const r = Math.random(); // volume filler
+            
+            // Random spread for volume
+            const spread = 0.5 + Math.random(); 
+
+            let x = 16 * Math.pow(Math.sin(t), 3);
+            let y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+            let z = (Math.random() - 0.5) * 10; // depth
+
+            // Scale down
+            x *= 1.5; y *= 1.5;
+            
+            tempArr.push(x, y + 10, z); // shift up slightly
+        }
+        return tempArr;
+    }
+
+    function generateFlower() {
+        const tempArr = [];
+        for(let i=0; i<PARTICLE_COUNT; i++) {
+            // Polar Rose: r = cos(k * theta)
+            const theta = Math.random() * Math.PI * 2;
+            const k = 4; // petals
+            const rBase = Math.cos(k * theta);
+            const r = (rBase + 1.5) * (Math.random() * 20); // Scale
+            
+            const x = r * Math.cos(theta);
+            const y = r * Math.sin(theta);
+            const z = (Math.random() - 0.5) * (Math.abs(r)/2); // Curvature
+
+            tempArr.push(x, y + 10, z);
+        }
+        return tempArr;
+    }
+
+    function generateGalaxy() {
+        const tempArr = [];
+        for(let i=0; i<PARTICLE_COUNT; i++) {
+            const arms = 5;
+            const armIndex = i % arms;
+            const randomOffset = Math.random() * 2 * Math.PI;
+            const distance = Math.random() * 40;
+            const spin = distance * 0.2;
+            
+            const angle = (armIndex / arms) * Math.PI * 2 + spin;
+            
+            const x = Math.cos(angle) * distance;
+            const z = Math.sin(angle) * distance;
+            const y = (Math.random() - 0.5) * (100 / (distance + 1)); // Bulge in center
+
+            tempArr.push(x, y, z);
+        }
+        return tempArr;
+    }
+
+    // Pre-calculate templates
+    const templates = [
+        { name: "CITY GRID", data: generateCity() },
+        { name: "NEON HEART", data: generateHeart() },
+        { name: "CYBER FLOWER", data: generateFlower() },
+        { name: "SPIRAL GALAXY", data: generateGalaxy() }
+    ];
+
+    // --- THREE.JS SETUP ---
+
+    function init() {
+        const container = document.getElementById('canvas-container');
+        
+        // Scene
+        scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.015);
+
+        // Camera
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 80;
+        camera.position.y = 20;
+        camera.lookAt(0, 0, 0);
+
+        // Renderer
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        // Geometry
+        geometry = new THREE.BufferGeometry();
+        
+        // Initialize positions
+        const cityData = templates[0].data;
+        for (let i = 0; i < PARTICLE_COUNT * 3; i++) {
+            positions[i] = cityData[i];
+            targetPositions[i] = cityData[i];
+            colors[i] = 0.0; // Initial color (blue-ish)
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        // Material (Using texture for particle look)
+        const sprite = new THREE.TextureLoader().load('https://threejs.org/examples/textures/sprites/disc.png');
+        
+        material = new THREE.PointsMaterial({
+            size: PARTICLE_SIZE,
+            map: sprite,
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            transparent: true,
+            opacity: 0.8
+        });
+
+        particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // Light (Ambient)
+        const ambientLight = new THREE.AmbientLight(0x404040);
+        scene.add(ambientLight);
+
+        // Window resize
+        window.addEventListener('resize', onWindowResize, false);
+
+        animate();
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // --- MAIN LOOP ---
+
+    function animate() {
+        requestAnimationFrame(animate);
+        time += 0.01;
+
+        // Shape Switch Logic
+        if (shapeSwitchCooldown > 0) shapeSwitchCooldown--;
+
+        // Access attributes
+        const posAttr = geometry.attributes.position;
+        const colAttr = geometry.attributes.color;
+        
+        // Center rotation for idle animation
+        particles.rotation.y += 0.001;
+
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            const i3 = i * 3;
+
+            // 1. MORPHING LOGIC (Move current position toward target position)
+            // We use simple lerp for smooth transition
+            const tx = targetPositions[i3];
+            const ty = targetPositions[i3 + 1];
+            const tz = targetPositions[i3 + 2];
+
+            let px = posAttr.array[i3];
+            let py = posAttr.array[i3 + 1];
+            let pz = posAttr.array[i3 + 2];
+
+            // Basic Interpolation
+            px += (tx - px) * MORPH_SPEED;
+            py += (ty - py) * MORPH_SPEED;
+            pz += (tz - pz) * MORPH_SPEED;
+
+            // 2. INTERACTION LOGIC (MediaPipe)
+            if (isHandPresent) {
+                // Distance to hand
+                const dx = px - handPosition.x;
+                const dy = py - handPosition.y;
+                const dz = pz - handPosition.z;
+                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+                if (dist < INTERACTION_RADIUS) {
+                    if (isPinching) {
+                        // REPEL / EXPLODE
+                        const force = (INTERACTION_RADIUS - dist) * 0.2;
+                        px += (dx / dist) * force;
+                        py += (dy / dist) * force;
+                        pz += (dz / dist) * force;
+                        
+                        // Color Hot
+                        colAttr.array[i3] = 1.0;     // R
+                        colAttr.array[i3+1] = 0.2;   // G
+                        colAttr.array[i3+2] = 0.0;   // B
+                    } else {
+                        // ATTRACT / SWIRL
+                        const force = (INTERACTION_RADIUS - dist) * 0.02;
+                        px -= (dx / dist) * force;
+                        py -= (dy / dist) * force;
+                        pz -= (dz / dist) * force;
+
+                        // Color Cool/Tech
+                        colAttr.array[i3] = 0.0;     // R
+                        colAttr.array[i3+1] = 1.0;   // G
+                        colAttr.array[i3+2] = 0.8;   // B
+                    }
+                } else {
+                    // Reset Color slowly
+                    colAttr.array[i3] = lerp(colAttr.array[i3], 0.0, 0.05); // R
+                    colAttr.array[i3+1] = lerp(colAttr.array[i3+1], 0.5, 0.05); // G
+                    colAttr.array[i3+2] = lerp(colAttr.array[i3+2], 1.0, 0.05); // B
+                }
+            } else {
+                // Default colors (City lights)
+                const isWindow = Math.random() > 0.9;
+                if(isWindow && currentShapeIndex === 0) {
+                     colAttr.array[i3] = 1.0; colAttr.array[i3+1] = 0.9; colAttr.array[i3+2] = 0.4;
+                } else {
+                    colAttr.array[i3] = lerp(colAttr.array[i3], 0.1, 0.05);
+                    colAttr.array[i3+1] = lerp(colAttr.array[i3+1], 0.2, 0.05);
+                    colAttr.array[i3+2] = lerp(colAttr.array[i3+2], 0.6, 0.05);
+                }
+            }
+
+            posAttr.array[i3] = px;
+            posAttr.array[i3 + 1] = py;
+            posAttr.array[i3 + 2] = pz;
+        }
+
+        posAttr.needsUpdate = true;
+        colAttr.needsUpdate = true;
+
+        renderer.render(scene, camera);
+    }
+
+    function lerp(start, end, amt) {
+        return (1 - amt) * start + amt * end;
+    }
+
+    function switchShape() {
+        if(shapeSwitchCooldown > 0) return;
+        
+        currentShapeIndex = (currentShapeIndex + 1) % templates.length;
+        const tmpl = templates[currentShapeIndex];
+        
+        modeEl.innerText = tmpl.name;
+        
+        // Update Target Buffers
+        const data = tmpl.data;
+        for(let i=0; i<PARTICLE_COUNT * 3; i++) {
+            targetPositions[i] = data[i];
+        }
+        
+        shapeSwitchCooldown = 100; // Frames delay prevents rapid cycling
+    }
+
+    // --- MEDIAPIPE SETUP ---
+
+    const videoElement = document.getElementById('video-feed');
+    
+    function onResults(results) {
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            statusEl.innerText = "Tracking Active";
+            statusEl.style.color = "#00ff00";
+
+            // 1. Detect Shape Switch (Two Hands)
+            if (results.multiHandLandmarks.length === 2) {
+                switchShape();
+            }
+
+            // 2. Track Primary Hand for Physics
+            const landmarks = results.multiHandLandmarks[0];
+            isHandPresent = true;
+
+            // Calculate Position (Map 0-1 video space to Three.js World Space)
+            // Index finger tip is landmark 8
+            const indexTip = landmarks[8];
+            const thumbTip = landmarks[4];
+            
+            // Map coordinates (Video is mirrored usually, so 1-x)
+            const x = (0.5 - indexTip.x) * 100; // Scale to scene width
+            const y = (0.5 - indexTip.y) * 60 + 10;  // Scale to scene height
+            const z = 0; // Keep hand on a plane mostly
+
+            // Smooth hand movement
+            handPosition.lerp(new THREE.Vector3(x, y, z), 0.2);
+
+            // 3. Pinch Detection (Euclidean distance between Index 8 and Thumb 4)
+            const pinchDist = Math.sqrt(
+                Math.pow(indexTip.x - thumbTip.x, 2) + 
+                Math.pow(indexTip.y - thumbTip.y, 2)
+            );
+
+            // Threshold for pinch
+            isPinching = pinchDist < 0.05;
+
+        } else {
+            isHandPresent = false;
+            statusEl.innerText = "No Hand Detected";
+            statusEl.style.color = "#ff0055";
+        }
+    }
+
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+
+    hands.onResults(onResults);
+
+    const cameraUtils = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 320,
+        height: 240
+    });
+
+    cameraUtils.start()
+        .then(() => {
+            console.log("Camera started");
+            init(); // Start Three.js only after camera is ready
+        })
+        .catch(err => {
+            console.error(err);
+            statusEl.innerText = "Camera Error (Use HTTPS/Localhost)";
+        });
+
+</script>
+</body>
+</html>

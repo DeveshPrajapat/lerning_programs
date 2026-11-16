@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Fixed Particle System</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: monospace; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        /* Debug video - semi-transparent */
+        #video-feed { position: absolute; bottom: 10px; left: 10px; width: 160px; height: 120px; z-index: 2; border: 1px solid #444; transform: scaleX(-1); opacity: 0.3; border-radius: 4px; }
+        
+        #ui { position: absolute; top: 20px; left: 20px; color: #00ffcc; z-index: 3; pointer-events: none; user-select: none; }
+        h1 { margin: 0; font-size: 1.5rem; text-shadow: 0 0 10px #00ffcc; }
+        .panel { background: rgba(0, 20, 20, 0.8); padding: 15px; border-left: 4px solid #00ffcc; margin-top: 10px; border-radius: 4px; }
+        .row { display: flex; align-items: center; margin-bottom: 5px; font-size: 0.9rem; color: #ddd; }
+        .icon { width: 25px; text-align: center; margin-right: 10px; font-size: 1.2rem; }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="ui">
+        <div class="panel">
+            <h1>PARTICLE SYSTEM FIXED</h1>
+            <p>Status: <span id="status" style="color:yellow">Waiting for Camera...</span></p>
+            <p>Mode: <span id="mode" style="color:#fff; font-weight:bold;">CITY GRID</span></p>
+        </div>
+        <div class="panel">
+            <div class="row"><span class="icon">☝️</span> 1 Finger: City</div>
+            <div class="row"><span class="icon">✌️</span> 2 Fingers: Flower</div>
+            <div class="row"><span class="icon">🤟</span> 3 Fingers: Heart</div>
+            <div class="row"><span class="icon">🖖</span> 4 Fingers: Saturn</div>
+            <div class="row"><span class="icon">🖐</span> 5 Fingers: Galaxy</div>
+            <hr style="border-color:#333; width:100%">
+            <div class="row"><span class="icon">👌</span> Pinch: <b>EXPLODE</b></div>
+        </div>
+    </div>
+
+    <video id="video-feed" playsinline></video>
+    <div id="canvas-container"></div>
+
+<script>
+    // --- CONFIG ---
+    const CONFIG = {
+        count: 15000,
+        size: 0.25,     // Slightly larger for visibility
+        radius: 70,     // Interaction radius
+        speed: 0.05
+    };
+
+    // --- STATE ---
+    let scene, camera, renderer, particles, geometry;
+    let time = 0;
+    let activeShape = "CITY";
+    let isInitialized = false;
+
+    // Interaction
+    let handPos = new THREE.Vector3(0,0,0);
+    let hasHand = false;
+    let isPinching = false;
+    let cooldown = 0;
+
+    // Buffers
+    const positions = new Float32Array(CONFIG.count * 3);
+    const targetPos = new Float32Array(CONFIG.count * 3);
+    const colors = new Float32Array(CONFIG.count * 3);
+
+    // --- GENERATE TEXTURE PROGRAMMATICALLY (Fixes Invisible Particles) ---
+    function getSprite() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32; canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        
+        // Draw a glowy circle
+        const grad = ctx.createRadialGradient(16,16,0, 16,16,16);
+        grad.addColorStop(0, 'rgba(255,255,255,1)');
+        grad.addColorStop(0.4, 'rgba(255,255,255,0.5)');
+        grad.addColorStop(1, 'rgba(255,255,255,0)');
+        
+        ctx.fillStyle = grad;
+        ctx.fillRect(0,0,32,32);
+        
+        const tex = new THREE.CanvasTexture(canvas);
+        return tex;
+    }
+
+    // --- SHAPE GENERATORS ---
+    function genCity() {
+        const arr = [];
+        for(let i=0; i<CONFIG.count; i++) {
+            const range = 100;
+            const xb = Math.round(((Math.random()*range)-(range/2))/10)*10;
+            const zb = Math.round(((Math.random()*range)-(range/2))/10)*10;
+            const h = 20 + Math.random() * 40;
+            const w = 2 + Math.random() * 5;
+            const face = Math.floor(Math.random()*5);
+            let px=0, py=0, pz=0;
+            if(face<4) {
+                py=(Math.random()-0.5)*h + h/2;
+                if(face===0) px=w; if(face===1) px=-w;
+                if(face===2) pz=w; if(face===3) pz=-w;
+            } else { py=h; px=(Math.random()-0.5)*w; pz=(Math.random()-0.5)*w; }
+            arr.push(xb+px, py-20, zb+pz);
+        }
+        return arr;
+    }
+
+    function genFlower() {
+        const arr = [];
+        for(let i=0; i<CONFIG.count; i++) {
+            const u = Math.random()*Math.PI*4;
+            const v = Math.random()*Math.PI*2;
+            const r = 30 * Math.sin(2*u);
+            arr.push(r*Math.cos(u)*Math.sin(v), r*Math.cos(v)+5, r*Math.sin(u)*Math.sin(v));
+        }
+        return arr;
+    }
+
+    function genHeart() {
+        const arr = [];
+        for(let i=0; i<CONFIG.count; i++) {
+            const t = Math.random()*Math.PI*2;
+            let x = 16*Math.pow(Math.sin(t),3);
+            let y = 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t);
+            let z = (Math.random()-0.5)*6;
+            const s = 1.5;
+            arr.push(x*s, y*s+5, z*s);
+        }
+        return arr;
+    }
+
+    function genSaturn() {
+        const arr = [];
+        for(let i=0; i<CONFIG.count; i++) {
+            if(i < CONFIG.count*0.6) {
+                const r = 20, u=Math.random(), v=Math.random();
+                const t=2*Math.PI*u, p=Math.acos(2*v-1);
+                arr.push(r*Math.sin(p)*Math.cos(t), r*Math.sin(p)*Math.sin(t), r*Math.cos(p));
+            } else {
+                const a = Math.random()*Math.PI*2, d=30+Math.random()*30;
+                const x=Math.cos(a)*d, z=Math.sin(a)*d;
+                arr.push(x, x*0.4*Math.sin(0.4)-z*Math.sin(0.4), z*Math.cos(0.4)+x*0.4);
+            }
+        }
+        return arr;
+    }
+
+    function genGalaxy() {
+        const arr = [];
+        for(let i=0; i<CONFIG.count; i++) {
+            const angle = (i%3)/3 * Math.PI*2 + (Math.random()*60)*0.2;
+            const dist = Math.random()*70;
+            arr.push(Math.cos(angle)*dist, (Math.random()-0.5)*(100/(dist+1)), Math.sin(angle)*dist);
+        }
+        return arr;
+    }
+
+    const SHAPES = {
+        "CITY": genCity(), "FLOWER": genFlower(), "HEART": genHeart(), "SATURN": genSaturn(), "GALAXY": genGalaxy()
+    };
+
+    // --- THREE JS ---
+    function initThree() {
+        if(isInitialized) return;
+        isInitialized = true;
+
+        scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.02);
+
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 15, 80);
+
+        renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        geometry = new THREE.BufferGeometry();
+        
+        // Load Initial Data
+        const data = SHAPES["CITY"];
+        for(let i=0; i<CONFIG.count*3; i++) {
+            positions[i] = data[i];
+            targetPos[i] = data[i];
+            // Fix: Initialize as WHITE (1.0) instead of black so they are visible immediately
+            colors[i] = 1.0; 
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const material = new THREE.PointsMaterial({
+            size: CONFIG.size,
+            map: getSprite(), // Use generated texture
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            transparent: true,
+            opacity: 0.8
+        });
+
+        particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth/window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    }
+
+    // --- ANIMATION ---
+    function lerp(s, e, a) { return (1-a)*s + a*e; }
+
+    function setShape(name) {
+        if(activeShape === name) return;
+        activeShape = name;
+        document.getElementById('mode').innerText = name;
+        const data = SHAPES[name];
+        for(let i=0; i<CONFIG.count*3; i++) targetPos[i] = data[i];
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        time += 0.01;
+        if(cooldown > 0) cooldown--;
+
+        const pos = geometry.attributes.position.array;
+        const col = geometry.attributes.color.array;
+
+        particles.rotation.y = Math.sin(time*0.1)*0.1;
+
+        for(let i=0; i<CONFIG.count; i++) {
+            const i3 = i*3;
+
+            // Morph
+            pos[i3] += (targetPos[i3] - pos[i3]) * CONFIG.speed;
+            pos[i3+1] += (targetPos[i3+1] - pos[i3+1]) * CONFIG.speed;
+            pos[i3+2] += (targetPos[i3+2] - pos[i3+2]) * CONFIG.speed;
+
+            // Physics
+            if(hasHand) {
+                const dx = pos[i3] - handPos.x;
+                const dy = pos[i3+1] - handPos.y;
+                const dz = pos[i3+2] - handPos.z;
+                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+                if(dist < CONFIG.radius) {
+                    if(isPinching) {
+                        const f = (CONFIG.radius - dist) * 0.2;
+                        pos[i3] += (dx/dist)*f; pos[i3+1] += (dy/dist)*f; pos[i3+2] += (dz/dist)*f;
+                        col[i3]=1; col[i3+1]=0.2; col[i3+2]=0; // Red Hot
+                    } else {
+                        const f = (CONFIG.radius - dist) * 0.03;
+                        pos[i3] -= (dx/dist)*f; pos[i3+1] -= (dy/dist)*f; pos[i3+2] -= (dz/dist)*f;
+                        col[i3]=0.2; col[i3+1]=1; col[i3+2]=1; // Cyan Interaction
+                    }
+                }
+            }
+
+            // Restore Color
+            if(!hasHand || (hasHand && !isPinching)) {
+                let r=1, g=1, b=1;
+                if(activeShape === "CITY") { r=0.2; g=0.6; b=1.0; }
+                else if(activeShape === "FLOWER") { r=1.0; g=0.2; b=0.8; }
+                else if(activeShape === "HEART") { r=1.0; g=0.0; b=0.2; }
+                else if(activeShape === "SATURN") { r=1.0; g=0.8; b=0.3; }
+                else if(activeShape === "GALAXY") { r=0.7; g=0.3; b=1.0; }
+                
+                col[i3] = lerp(col[i3], r, 0.05);
+                col[i3+1] = lerp(col[i3+1], g, 0.05);
+                col[i3+2] = lerp(col[i3+2], b, 0.05);
+            }
+        }
+        geometry.attributes.position.needsUpdate = true;
+        geometry.attributes.color.needsUpdate = true;
+        renderer.render(scene, camera);
+    }
+
+    // --- VISION ---
+    function onResults(results) {
+        if(results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            hasHand = true;
+            document.getElementById('status').innerText = "Active";
+            document.getElementById('status').style.color = "#0f0";
+            
+            const lm = results.multiHandLandmarks[0];
+            const idx = lm[8];
+            const thm = lm[4];
+
+            // Update Hand Pos (Map 0..1 to -70..70)
+            const tx = (0.5 - idx.x) * 140;
+            const ty = (0.5 - idx.y) * 100;
+            handPos.lerp(new THREE.Vector3(tx, ty, 0), 0.3);
+
+            // Pinch
+            const d = Math.hypot(idx.x-thm.x, idx.y-thm.y);
+            isPinching = d < 0.05;
+
+            // Gestures
+            if(cooldown === 0) {
+                const f = [8,12,16,20].map((t,i) => lm[t].y < lm[t-2].y); // Tips above PIPs
+                const count = f.filter(Boolean).length + (Math.abs(thm.x - lm[0].x) > 0.05 ? 1 : 0);
+                
+                if(count===1) setShape("CITY");
+                if(count===2) setShape("FLOWER");
+                if(count===3) setShape("HEART");
+                if(count===4) setShape("SATURN");
+                if(count===5) setShape("GALAXY");
+                
+                if(count > 0) cooldown = 15;
+            }
+        } else {
+            hasHand = false;
+            document.getElementById('status').innerText = "No Hand";
+            document.getElementById('status').style.color = "orange";
+        }
+    }
+
+    // --- BOOTSTRAP ---
+    const vid = document.getElementById('video-feed');
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5});
+    hands.onResults(onResults);
+
+    const cam = new Camera(vid, {
+        onFrame: async () => { await hands.send({image: vid}); },
+        width: 320, height: 240
+    });
+
+    cam.start().then(() => {
+        console.log("Camera started");
+        initThree();
+    }).catch(e => {
+        console.error("Camera failed", e);
+        alert("Camera failed! Starting simulation anyway.");
+        initThree(); // Force start if camera fails
+    });
+
+    // Fallback if camera hangs
+    setTimeout(() => {
+        if(!isInitialized) {
+            console.log("Force starting...");
+            initThree();
+        }
+    }, 2000);
+
+</script>
+</body>
+</html>
