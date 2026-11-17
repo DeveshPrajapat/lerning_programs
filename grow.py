@@ -118,4 +118,32 @@
 # print(la[0])
 # print(la)
 
+#! Topic: Two Sum Problem
 
+# a = [2, 7, 11, 15, 3, 6]
+# target = 9
+# for i in range(len(a)):
+#     for j in range(i+1,len(a)):
+#         if a[i]+a[j] == target:
+#             print(f'{a[i]} + {a[j]} = {target },index {i},{j}')
+        
+# TODO Move Zeros to end
+# a = [0, 1, 0, 3, 12, 0, 5, 8]
+# li = []
+# la = []
+# for i in a:
+#     if i  == 0:
+#         la.append(i)
+#     else:
+#         li.append(i)
+# print(li + la)
+
+
+# ? Find Missing Number
+
+a = [1, 2, 3, 5, 6, 7, 8, 9, 10]
+for i in range(1,11):
+    if i not in a:
+        print("Missing number : ", i)
+        break
+        
